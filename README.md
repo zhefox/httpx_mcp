@@ -17,6 +17,12 @@ An MCP tool for HTTP interface testing, built on the httpx library, designed for
 cd httpx-mcp
 pip install -e .
 ```
+or
+
+```
+pip install httpx-mcp
+```
+
 
 ## MCP Configuration
 
@@ -152,3 +158,4 @@ Size: 1024 bytes
 ## License
 
 MIT
+
