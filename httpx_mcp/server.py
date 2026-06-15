@@ -6,7 +6,11 @@ Provides the following MCP tools:
 - http_raw: Parse raw HTTP requests (supports Burp Suite capture format)
 """
 
+import asyncio
+import ipaddress
 import json
+import os
+import socket
 import sys
 from typing import Any
 
@@ -17,6 +21,83 @@ from mcp.types import Tool, TextContent
 
 # Create MCP server
 server = Server("httpx-mcp")
+
+ALLOW_PRIVATE_NETWORK_ENV = "HTTPX_MCP_ALLOW_PRIVATE_NETWORK"
+ALLOW_PRIVATE_NETWORK_VALUES = {"1", "true", "yes", "on"}
+
+
+class PrivateNetworkAccessError(ValueError):
+    """Raised when a request resolves to a private or local network address."""
+
+
+def private_network_access_allowed() -> bool:
+    """Return whether the operator explicitly allowed private network requests."""
+    value = os.getenv(ALLOW_PRIVATE_NETWORK_ENV, "")
+    return value.strip().lower() in ALLOW_PRIVATE_NETWORK_VALUES
+
+
+def is_blocked_ip_address(ip_address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return whether an address is unsafe for default MCP-driven requests."""
+    return not ip_address.is_global or ip_address.is_multicast
+
+
+async def resolve_host_addresses(
+    host: str,
+    port: int,
+) -> set[ipaddress.IPv4Address | ipaddress.IPv6Address]:
+    """Resolve a host and return all candidate IP addresses."""
+    try:
+        return {ipaddress.ip_address(host)}
+    except ValueError:
+        pass
+
+    loop = asyncio.get_running_loop()
+    try:
+        address_info = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Unable to resolve host: {host}") from exc
+
+    addresses = set()
+    for _family, _type, _proto, _canonname, sockaddr in address_info:
+        addresses.add(ipaddress.ip_address(sockaddr[0]))
+    return addresses
+
+
+async def validate_public_http_url(url: httpx.URL) -> None:
+    """Reject URLs that resolve to local, private, or otherwise non-public IPs."""
+    if url.scheme not in {"http", "https"}:
+        raise ValueError("Only http:// and https:// URLs are supported")
+
+    if not url.host:
+        raise ValueError("URL must include a hostname")
+
+    if private_network_access_allowed():
+        return
+
+    port = url.port or (443 if url.scheme == "https" else 80)
+    addresses = await resolve_host_addresses(url.host, port)
+    blocked_addresses = sorted(
+        (str(address) for address in addresses if is_blocked_ip_address(address)),
+        key=str,
+    )
+
+    if blocked_addresses:
+        raise PrivateNetworkAccessError(
+            "Blocked request to non-public network target: "
+            f"{url.host} resolved to {', '.join(blocked_addresses)}. "
+            f"Set {ALLOW_PRIVATE_NETWORK_ENV}=true only in trusted, isolated "
+            "environments to allow private network access."
+        )
+
+
+async def enforce_public_network_access(request: httpx.Request) -> None:
+    """httpx request hook that validates the initial request and redirects."""
+    await validate_public_http_url(request.url)
+
+
+def network_guard_event_hooks() -> dict[str, list]:
+    """Return httpx event hooks used to enforce the network guard."""
+    return {"request": [enforce_public_network_access]}
 
 
 def format_response(response: httpx.Response, include_headers: bool = True) -> str:
@@ -260,7 +341,8 @@ async def handle_http_request(args: dict[str, Any]) -> list[TextContent]:
     async with httpx.AsyncClient(
         timeout=timeout,
         follow_redirects=follow_redirects,
-        verify=verify_ssl
+        verify=verify_ssl,
+        event_hooks=network_guard_event_hooks()
     ) as client:
         response = await client.request(
             method=method,
@@ -329,7 +411,8 @@ async def handle_http_raw(args: dict[str, Any]) -> list[TextContent]:
     async with httpx.AsyncClient(
         timeout=30,
         follow_redirects=True,
-        verify=verify_ssl
+        verify=verify_ssl,
+        event_hooks=network_guard_event_hooks()
     ) as client:
         response = await client.request(
             method=method,

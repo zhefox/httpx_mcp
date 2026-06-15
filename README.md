@@ -52,6 +52,36 @@ Or use directly after installation:
 }
 ```
 
+## Security
+
+`httpx-mcp` can make outbound HTTP requests from the machine where the MCP
+server is running. To reduce SSRF risk when tool calls are influenced by LLM
+output or prompt injection, requests to non-public network addresses are blocked
+by default. This includes localhost/loopback, private RFC1918 ranges, link-local
+addresses such as cloud metadata endpoints, IPv6 unique local addresses, and
+other non-globally routable targets. Redirect targets are validated before each
+redirected request.
+
+For trusted and isolated security testing environments that intentionally need
+internal network access, set `HTTPX_MCP_ALLOW_PRIVATE_NETWORK=true` in the MCP
+server environment:
+
+```json
+{
+  "mcpServers": {
+    "httpx-mcp": {
+      "command": "httpx-mcp",
+      "env": {
+        "HTTPX_MCP_ALLOW_PRIVATE_NETWORK": "true"
+      }
+    }
+  }
+}
+```
+
+Only enable this option when you understand that the tool can then reach any
+HTTP(S) endpoint available to the MCP server process.
+
 ## Available Tools
 
 ### 1. `http_request` - General HTTP Request
@@ -158,4 +188,8 @@ Size: 1024 bytes
 ## License
 
 MIT
+
+## Acknowledgements
+
+SSRF hardening was reported privately by Syed Anas Mohiuddin.
 
